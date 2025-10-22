@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from database import get_patient_collection
 import streamlit as st
+import numpy as np
 
 class PatientRecord:
     """
@@ -23,6 +24,32 @@ class PatientRecord:
     """
     
     @staticmethod
+    def convert_to_native_types(obj):
+        """
+        Convert NumPy and other non-JSON-serializable types to native Python types
+        
+        Args:
+            obj: Object to convert
+            
+        Returns:
+            Object with native Python types
+        """
+        if isinstance(obj, dict):
+            return {key: PatientRecord.convert_to_native_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [PatientRecord.convert_to_native_types(item) for item in obj]
+        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        else:
+            return obj
+    
+    @staticmethod
     def create_schema(patient_data: Dict, prediction: int, probability: float) -> Dict:
         """
         Create a patient record following the schema
@@ -38,35 +65,38 @@ class PatientRecord:
         record = {
             'timestamp': datetime.now(),
             'demographics': {
-                'age': patient_data.get('age'),
-                'gender': patient_data.get('gender')
+                'age': str(patient_data.get('age')),
+                'gender': str(patient_data.get('gender'))
             },
             'admission_details': {
-                'admission_type': patient_data.get('admission_type_id'),
-                'discharge_disposition': patient_data.get('discharge_disposition_id'),
-                'admission_source': patient_data.get('admission_source_id')
+                'admission_type': str(patient_data.get('admission_type_id')),
+                'discharge_disposition': str(patient_data.get('discharge_disposition_id')),
+                'admission_source': str(patient_data.get('admission_source_id'))
             },
             'clinical_metrics': {
-                'time_in_hospital': patient_data.get('time_in_hospital'),
-                'num_lab_procedures': patient_data.get('num_lab_procedures'),
-                'number_inpatient': patient_data.get('number_inpatient')
+                'time_in_hospital': int(patient_data.get('time_in_hospital')),
+                'num_lab_procedures': int(patient_data.get('num_lab_procedures')),
+                'number_inpatient': int(patient_data.get('number_inpatient'))
             },
             'diagnostic_info': {
-                'number_diagnoses': patient_data.get('number_diagnoses'),
-                'max_glu_serum': patient_data.get('max_glu_serum'),
-                'A1Cresult': patient_data.get('A1Cresult')
+                'number_diagnoses': int(patient_data.get('number_diagnoses')),
+                'max_glu_serum': str(patient_data.get('max_glu_serum')),
+                'A1Cresult': str(patient_data.get('A1Cresult'))
             },
             'treatment_info': {
-                'medication_change': patient_data.get('change'),
-                'diabetes_medication': patient_data.get('diabetesMed')
+                'medication_change': str(patient_data.get('change')),
+                'diabetes_medication': str(patient_data.get('diabetesMed'))
             },
             'prediction_result': {
-                'prediction': prediction,
+                'prediction': int(prediction),
                 'probability': float(probability),
-                'risk_level': 'High Risk' if prediction == 1 else 'Low Risk',
+                'risk_level': 'High Risk' if int(prediction) == 1 else 'Low Risk',
                 'risk_percentage': float(probability * 100)
             }
         }
+        
+        # Convert any remaining NumPy types to native Python types
+        record = PatientRecord.convert_to_native_types(record)
         
         return record
     
