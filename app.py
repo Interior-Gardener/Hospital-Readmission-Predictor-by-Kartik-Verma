@@ -12,6 +12,18 @@ from datetime import datetime, timedelta
 import base64
 from io import BytesIO
 
+# MongoDB imports - lazy loaded to avoid slowing startup
+
+def get_mongodb_modules():
+    """Lazy load MongoDB modules only when needed"""
+    try:
+        from models import PatientRecord
+        from database import test_connection
+        return PatientRecord, test_connection
+    except Exception as e:
+        print(f"MongoDB modules not available: {e}")
+        return None, None
+
 # Page config
 st.set_page_config(
     page_title="Hospital Readmission Predictor - AI Healthcare Tool",
@@ -45,7 +57,7 @@ def load_css():
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 2rem;
         border-radius: 15px;
-        color: white;
+        color: grey;
         text-align: center;
         margin: 1rem 0;
         box-shadow: 0 10px 25px rgba(0,0,0,0.1);
@@ -60,7 +72,7 @@ def load_css():
     }
     
     .info-card {
-        background: white;
+        background: black;
         padding: 1.5rem;
         border-radius: 10px;
         border-left: 4px solid #2E86AB;
@@ -69,7 +81,7 @@ def load_css():
     }
     
     .metric-container {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        background: linear-gradient(135deg, #44689d 0%, #c3cfe2 100%);
         padding: 1rem;
         border-radius: 10px;
         text-align: center;
@@ -77,7 +89,7 @@ def load_css():
     }
     
     .stSelectbox > div > div {
-        background-color: #f8f9fa;
+        background-color: grey;
     }
     
     .stButton > button {
@@ -174,8 +186,25 @@ if model is None:
 
 # Navigation
 st.sidebar.title("🏥 Navigation")
+
+# Database connection status - lazy loaded
+with st.sidebar:
+    with st.expander("🔌 Database Status"):
+        try:
+            PatientRecord, test_connection = get_mongodb_modules()
+            if test_connection:
+                is_connected, message = test_connection()
+                if is_connected:
+                    st.success("✅ MongoDB Connected")
+                else:
+                    st.warning(f"⚠️ MongoDB Offline\n\n{message}")
+            else:
+                st.info("ℹ️ MongoDB modules not loaded")
+        except Exception as e:
+            st.info("ℹ️ MongoDB unavailable (app works without it)")
+
 page = st.sidebar.selectbox("Choose a page", 
-                          ["🏠 Home", "📊 Analytics", "📚 About", "📈 Model Performance", "📋 Patient History"])
+                          ["🏠 Home", "📊 Analytics", "🗂️ Patient Records Database", "📚 About", "📈 Model Performance", "📋 Patient History"])
 
 # HOME PAGE
 if page == "🏠 Home":
@@ -333,7 +362,7 @@ if page == "🏠 Home":
                 if error:
                     st.error(f"Prediction failed: {error}")
                 else:
-                    # Store prediction in history
+                    # Store prediction in session state (for in-memory history)
                     prediction_data = {
                         'timestamp': datetime.now(),
                         'patient_data': input_df.iloc[0].to_dict(),
@@ -341,6 +370,21 @@ if page == "🏠 Home":
                         'probability': probability
                     }
                     st.session_state.prediction_history.append(prediction_data)
+                    
+                    # Save to MongoDB (lazy loaded)
+                    try:
+                        PatientRecord, _ = get_mongodb_modules()
+                        if PatientRecord:
+                            record_id = PatientRecord.save_record(
+                                input_df.iloc[0].to_dict(),
+                                prediction,
+                                probability
+                            )
+                            
+                            if record_id:
+                                st.success(f"✅ Record saved to database! (ID: {record_id[:8]}...)")
+                    except Exception as e:
+                        st.info("ℹ️ Database unavailable - record saved in session only")
                 
                     # Display results
                     st.markdown("### 🎯 Prediction Results")
@@ -563,6 +607,337 @@ elif page == "📊 Analytics":
         with col4:
             avg_stay = df_history['time_in_hospital'].mean()
             st.metric("Avg Hospital Stay", f"{avg_stay:.1f} days")
+
+# PATIENT RECORDS DATABASE PAGE
+elif page == "🗂️ Patient Records Database":
+    st.markdown('<h1 class="main-header">🗂️ Patient Records Database</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">View and manage all stored patient prediction records from MongoDB</p>', unsafe_allow_html=True)
+    
+    # Lazy load MongoDB modules
+    PatientRecord, _ = get_mongodb_modules()
+    
+    if not PatientRecord:
+        st.error("""
+        ⚠️ **MongoDB Not Available**
+        
+        The database features are currently unavailable. This could be because:
+        - MongoDB is not installed
+        - MongoDB service is not running
+        - Database connection failed
+        
+        **To enable database features:**
+        1. Install MongoDB or use MongoDB Atlas
+        2. Run `python test_mongodb.py` to verify setup
+        3. Check `MONGODB_SETUP.md` for detailed instructions
+        
+        **Note:** The app works fine without MongoDB - records are stored in session memory.
+        """)
+        st.stop()
+    
+    # Database statistics
+    st.markdown("### 📊 Database Overview")
+    
+    stats = PatientRecord.get_statistics()
+    
+    if stats:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>Total Records</h3>
+                <h2>{stats.get('total_records', 0)}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col2:
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>High Risk</h3>
+                <h2>{stats.get('high_risk_count', 0)}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col3:
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>Low Risk</h3>
+                <h2>{stats.get('low_risk_count', 0)}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col4:
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>High Risk %</h3>
+                <h2>{stats.get('high_risk_percentage', 0):.1f}%</h2>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Filters and controls
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        filter_option = st.selectbox(
+            "🔍 Filter by Risk Level",
+            ["All Records", "High Risk Only", "Low Risk Only"]
+        )
+    
+    with col2:
+        sort_option = st.selectbox(
+            "📅 Sort by",
+            ["Newest First", "Oldest First", "Highest Risk", "Lowest Risk"]
+        )
+    
+    with col3:
+        st.markdown("###")  # Spacing
+        refresh_btn = st.button("🔄 Refresh", use_container_width=True)
+    
+    # Retrieve records based on filters
+    if filter_option == "High Risk Only":
+        records = PatientRecord.get_records_by_risk("High Risk", limit=100)
+    elif filter_option == "Low Risk Only":
+        records = PatientRecord.get_records_by_risk("Low Risk", limit=100)
+    else:
+        records = PatientRecord.get_all_records(limit=100)
+    
+    # Display records
+    if len(records) == 0:
+        st.info("📭 No records found in the database. Make predictions on the Home page to add records.")
+    else:
+        st.markdown(f"### 📋 Patient Records ({len(records)} records)")
+        
+        # Convert records to DataFrame for table display
+        table_data = []
+        for record in records:
+            table_data.append({
+                'Timestamp': record['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
+                'Age': record['demographics']['age'],
+                'Gender': record['demographics']['gender'],
+                'Admission Type': record['admission_details']['admission_type'],
+                'Hospital Stay (days)': record['clinical_metrics']['time_in_hospital'],
+                'Lab Procedures': record['clinical_metrics']['num_lab_procedures'],
+                'Prior Visits': record['clinical_metrics']['number_inpatient'],
+                'Diagnoses': record['diagnostic_info']['number_diagnoses'],
+                'Risk Level': record['prediction_result']['risk_level'],
+                'Risk Score': f"{record['prediction_result']['risk_percentage']:.1f}%",
+                'ID': str(record['_id'])
+            })
+        
+        df_records = pd.DataFrame(table_data)
+        
+        # Sort based on selection
+        if sort_option == "Newest First":
+            df_records = df_records.sort_values('Timestamp', ascending=False)
+        elif sort_option == "Oldest First":
+            df_records = df_records.sort_values('Timestamp', ascending=True)
+        elif sort_option == "Highest Risk":
+            df_records = df_records.sort_values('Risk Score', ascending=False)
+        elif sort_option == "Lowest Risk":
+            df_records = df_records.sort_values('Risk Score', ascending=True)
+        
+        # Display table with color coding
+        def color_risk(val):
+            if val == 'High Risk':
+                return 'background-color: #ffcccb; color: #8b0000; font-weight: bold'
+            elif val == 'Low Risk':
+                return 'background-color: #90ee90; color: #006400; font-weight: bold'
+            return ''
+        
+        # Create styled dataframe
+        styled_df = df_records.drop('ID', axis=1).style.applymap(
+            color_risk,
+            subset=['Risk Level']
+        )
+        
+        # Display the table
+        st.dataframe(
+            styled_df,
+            use_container_width=True,
+            height=400
+        )
+        
+        # Download options
+        st.markdown("### 📥 Export Options")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Export as CSV
+            csv = df_records.drop('ID', axis=1).to_csv(index=False)
+            st.download_button(
+                label="📊 Download as CSV",
+                data=csv,
+                file_name=f"patient_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # Export as Excel (requires openpyxl)
+            try:
+                from io import BytesIO
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_records.drop('ID', axis=1).to_excel(writer, index=False, sheet_name='Patient Records')
+                excel_data = output.getvalue()
+                
+                st.download_button(
+                    label="📈 Download as Excel",
+                    data=excel_data,
+                    file_name=f"patient_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except ImportError:
+                st.button("📈 Download as Excel (Install openpyxl)", disabled=True, use_container_width=True)
+        
+        with col3:
+            # Export as JSON
+            json_data = df_records.drop('ID', axis=1).to_json(orient='records', indent=2)
+            st.download_button(
+                label="📄 Download as JSON",
+                data=json_data,
+                file_name=f"patient_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        
+        # Detailed view expander
+        st.markdown("---")
+        st.markdown("### 🔍 Detailed Record View")
+        
+        selected_record = st.selectbox(
+            "Select a record to view details:",
+            options=range(len(records)),
+            format_func=lambda x: f"{records[x]['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} - {records[x]['demographics']['age']} {records[x]['demographics']['gender']} - {records[x]['prediction_result']['risk_level']}"
+        )
+        
+        if selected_record is not None:
+            record = records[selected_record]
+            
+            with st.expander("👤 View Complete Record Details", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <h4>📋 Basic Information</h4>
+                    <p><strong>Record ID:</strong> {record['_id']}</p>
+                    <p><strong>Timestamp:</strong> {record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p><strong>Age:</strong> {record['demographics']['age']}</p>
+                    <p><strong>Gender:</strong> {record['demographics']['gender']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <h4>🏥 Clinical Metrics</h4>
+                    <p><strong>Time in Hospital:</strong> {record['clinical_metrics']['time_in_hospital']} days</p>
+                    <p><strong>Lab Procedures:</strong> {record['clinical_metrics']['num_lab_procedures']}</p>
+                    <p><strong>Prior Inpatient Visits:</strong> {record['clinical_metrics']['number_inpatient']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <h4>🧪 Diagnostic Information</h4>
+                    <p><strong>Number of Diagnoses:</strong> {record['diagnostic_info']['number_diagnoses']}</p>
+                    <p><strong>Max Glucose Serum:</strong> {record['diagnostic_info']['max_glu_serum']}</p>
+                    <p><strong>A1C Result:</strong> {record['diagnostic_info']['A1Cresult']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <h4>🚨 Admission Details</h4>
+                    <p><strong>Admission Type:</strong> {record['admission_details']['admission_type']}</p>
+                    <p><strong>Admission Source:</strong> {record['admission_details']['admission_source']}</p>
+                    <p><strong>Discharge Disposition:</strong> {record['admission_details']['discharge_disposition']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <h4>💊 Treatment Information</h4>
+                    <p><strong>Medication Change:</strong> {record['treatment_info']['medication_change']}</p>
+                    <p><strong>Diabetes Medication:</strong> {record['treatment_info']['diabetes_medication']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    risk_color = "risk-high" if record['prediction_result']['prediction'] == 1 else "risk-low"
+                    st.markdown(f"""
+                    <div class="prediction-card {risk_color}">
+                    <h4>🎯 Prediction Result</h4>
+                    <h3>{record['prediction_result']['risk_level']}</h3>
+                    <h2>{record['prediction_result']['risk_percentage']:.1f}%</h2>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Database management
+        st.markdown("---")
+        st.markdown("### ⚙️ Database Management")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.warning("⚠️ **Danger Zone**: This will permanently delete all records!")
+            
+        with col2:
+            if st.button("🗑️ Clear All Records", type="secondary"):
+                if st.session_state.get('confirm_clear', False):
+                    if PatientRecord.clear_all_records():
+                        st.success("✅ All records cleared successfully!")
+                        st.session_state.confirm_clear = False
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to clear records")
+                else:
+                    st.session_state.confirm_clear = True
+                    st.warning("⚠️ Click again to confirm deletion of all records")
+    
+    # Visualizations
+    if len(records) > 0:
+        st.markdown("---")
+        st.markdown("### 📊 Database Analytics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Risk distribution pie chart
+            risk_counts = df_records['Risk Level'].value_counts()
+            fig_pie = px.pie(
+                values=risk_counts.values,
+                names=risk_counts.index,
+                title="Risk Level Distribution",
+                color=risk_counts.index,
+                color_discrete_map={'High Risk': '#ff6b6b', 'Low Risk': '#51cf66'}
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with col2:
+            # Age distribution
+            age_counts = df_records['Age'].value_counts().sort_index()
+            fig_age = px.bar(
+                x=age_counts.index,
+                y=age_counts.values,
+                title="Age Distribution",
+                labels={'x': 'Age Range', 'y': 'Count'}
+            )
+            st.plotly_chart(fig_age, use_container_width=True)
+        
+        # Risk scores histogram
+        risk_scores = [float(score.strip('%')) for score in df_records['Risk Score']]
+        fig_hist = px.histogram(
+            x=risk_scores,
+            nbins=20,
+            title="Risk Score Distribution",
+            labels={'x': 'Risk Score (%)', 'y': 'Frequency'}
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
 
 # ABOUT PAGE
 elif page == "📚 About":
